@@ -10,7 +10,6 @@
       "camera_id": "TEXT PRIMARY KEY",
       "location_id": "TEXT NOT NULL",
       "name": "TEXT NOT NULL"
-
     },
     "users": {
       "user_id": "TEXT PRIMARY KEY",
