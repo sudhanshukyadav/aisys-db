@@ -1,0 +1,25 @@
+{
+  "tables": {
+    "locations": {
+      "location_id": "TEXT PRIMARY KEY",
+      "description": "TEXT NOT NULL",
+      "address": "TEXT NOT NULL",
+      "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP"
+    },
+    "cameras": {
+      "camera_id": "TEXT PRIMARY KEY",
+      "location_id": "TEXT NOT NULL",
+      "name": "TEXT NOT NULL"
+
+    },
+    "users": {
+      "user_id": "TEXT PRIMARY KEY",
+      "location_id": "TEXT NOT NULL",
+      "username": "TEXT NOT NULL",
+      "password_hash": "TEXT NOT NULL",
+      "role": "TEXT NOT NULL DEFAULT 'viewer'",
+      "allowed_cameras": "TEXT NOT NULL DEFAULT '[]'",
+      "created_at": "TEXT DEFAULT CURRENT_TIMESTAMP"
+    }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aisys-db",
+  "main": "index.js",
+  "compatibility_date": "2024-09-23",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "aisys-db",
+      "database_id": "66f0bb45-c318-4099-a933-c685914877c1"
+    }
+  ]
+}
