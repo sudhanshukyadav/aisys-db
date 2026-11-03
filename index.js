@@ -1,7 +1,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 
 export class DbService extends WorkerEntrypoint {
-  // Self-contained schema initialization (no schema.json dependency)
+  // Self-contained schema initialization (no external schema.json needed)
   async ensureSchema() {
     if (!this.env?.DB) {
       throw new Error("D1 database binding 'DB' is missing in aisys-db/wrangler.json");
@@ -37,7 +37,7 @@ export class DbService extends WorkerEntrypoint {
     ]);
   }
 
-  // --- AUTHENTICATION & USER ONBOARDING ---
+  // --- AUTHENTICATION & LOCATION REGISTRATION ---
 
   async authenticateOrRegisterUser(locationId, username, password) {
     try {
@@ -51,10 +51,12 @@ export class DbService extends WorkerEntrypoint {
       const cleanUser = (username ?? '').trim().toLowerCase();
       const rawPass = (password ?? '').trim();
 
+      // 1. Validate inputs
       if (!cleanLoc || !cleanUser || !rawPass) {
         return { success: false, status: 400, error: 'Location code, Username, and Password are required.' };
       }
 
+      // 2. Validate location code
       const location = await this.env.DB.prepare(
         'SELECT location_id, description, address FROM locations WHERE location_id = ?'
       ).bind(cleanLoc).first();
@@ -65,6 +67,7 @@ export class DbService extends WorkerEntrypoint {
 
       const passwordHash = await this._hashPassword(rawPass);
 
+      // 3. User lookup or auto-provisioning
       let user = await this.env.DB.prepare(
         'SELECT user_id, location_id, username, password_hash, role, allowed_cameras FROM users WHERE location_id = ? AND username = ?'
       ).bind(cleanLoc, cleanUser).first();
@@ -85,6 +88,7 @@ export class DbService extends WorkerEntrypoint {
         return { success: false, status: 401, error: 'Incorrect password.' };
       }
 
+      // 4. Fetch authorized cameras with forgiving, case-insensitive parser
       let cameras = [];
       if (user.role === 'admin' || user.role === 'superuser') {
         const { results } = await this.env.DB.prepare(
@@ -93,7 +97,23 @@ export class DbService extends WorkerEntrypoint {
         cameras = results || [];
       } else {
         let allowedCameras = [];
-        try { allowedCameras = JSON.parse(user.allowed_cameras); } catch {}
+        const rawAllowed = (user.allowed_cameras ?? '').trim();
+
+        // Handles JSON arrays ['["APCAM"]'], plain text ('apcam'), or comma lists ('cam1, cam2')
+        if (rawAllowed.startsWith('[')) {
+          try {
+            allowedCameras = JSON.parse(rawAllowed);
+          } catch {
+            allowedCameras = [];
+          }
+        } else if (rawAllowed.length > 0) {
+          allowedCameras = rawAllowed.split(',').map(s => s.trim());
+        }
+
+        // Normalize inputs to uppercase strings
+        allowedCameras = allowedCameras
+          .map(c => String(c).trim().toUpperCase())
+          .filter(Boolean);
 
         if (allowedCameras.includes('*')) {
           const { results } = await this.env.DB.prepare(
@@ -102,8 +122,11 @@ export class DbService extends WorkerEntrypoint {
           cameras = results || [];
         } else if (allowedCameras.length > 0) {
           const placeholders = allowedCameras.map(() => '?').join(',');
+          // Uses UPPER(camera_id) for case-insensitive matching
           const { results } = await this.env.DB.prepare(
-            `SELECT camera_id, location_id, name FROM cameras WHERE location_id = ? AND camera_id IN (${placeholders}) ORDER BY camera_id ASC`
+            `SELECT camera_id, location_id, name FROM cameras 
+             WHERE location_id = ? AND UPPER(camera_id) IN (${placeholders}) 
+             ORDER BY camera_id ASC`
           ).bind(cleanLoc, ...allowedCameras).all();
           cameras = results || [];
         }
@@ -128,7 +151,7 @@ export class DbService extends WorkerEntrypoint {
     }
   }
 
-  // --- ADMIN CONSOLE RPC ---
+  // --- ADMIN DATABASE EXPLORER & RPC MANAGEMENT ---
 
   async _verifyAdmin(adminUserId) {
     if (!adminUserId || !this.env?.DB) return false;
@@ -186,6 +209,7 @@ export class DbService extends WorkerEntrypoint {
         return { success: false, status: 403, error: 'Unauthorized: Admin role required.' };
       }
 
+      // 1. Locations Table
       if (table === 'locations') {
         const id = (data.location_id ?? '').trim().toUpperCase();
         const desc = (data.description ?? '').trim();
@@ -200,6 +224,7 @@ export class DbService extends WorkerEntrypoint {
         return { success: true, message: `Location ${id} saved.` };
       }
 
+      // 2. Cameras Table (IDs stored in uppercase, no stream_url column needed)
       if (table === 'cameras') {
         const camId = (data.camera_id ?? '').trim().toUpperCase();
         const locId = (data.location_id ?? '').trim().toUpperCase();
@@ -217,11 +242,31 @@ export class DbService extends WorkerEntrypoint {
         return { success: true, message: `Camera ${camId} saved.` };
       }
 
+      // 3. Users Table
       if (table === 'users') {
         const locId = (data.location_id ?? '').trim().toUpperCase();
         const uname = (data.username ?? '').trim().toLowerCase();
         const role = (data.role ?? 'viewer').trim().toLowerCase();
-        const allowed = typeof data.allowed_cameras === 'string' ? data.allowed_cameras : JSON.stringify(data.allowed_cameras || []);
+
+        // Normalize allowed_cameras to stored JSON array format
+        let allowed = data.allowed_cameras;
+        if (typeof allowed === 'string') {
+          const trimmed = allowed.trim();
+          if (trimmed.startsWith('[')) {
+            try {
+              allowed = JSON.stringify(JSON.parse(trimmed).map(c => String(c).trim().toUpperCase()));
+            } catch {
+              allowed = trimmed;
+            }
+          } else if (trimmed.length > 0) {
+            allowed = JSON.stringify(trimmed.split(',').map(c => c.trim().toUpperCase()).filter(Boolean));
+          } else {
+            allowed = '[]';
+          }
+        } else {
+          allowed = JSON.stringify(allowed || []);
+        }
+
         const uId = data.user_id || `${locId}:${uname}`;
 
         if (isUpdate) {
@@ -251,6 +296,8 @@ export class DbService extends WorkerEntrypoint {
       return { success: false, status: 500, error: err.message || String(err) };
     }
   }
+
+  // --- CRYPTO UTILITY ---
 
   async _hashPassword(plainText) {
     const enc = new TextEncoder().encode(plainText);
